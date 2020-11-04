@@ -383,6 +383,11 @@ impl Encryptable {
     }
 }
 
+/// Shorthand for creating an `Encryptable::Plain` from text (not interpreted as JSON).
+pub fn string(s: impl ToString) -> Encryptable {
+    Encryptable::Plain(s.to_string().into())
+}
+
 /// A wrapper around [`Encryptable`] that also has an intent flag, indicating if we'd like
 /// it to be outputted as encrypted or plain.
 ///
@@ -609,6 +614,66 @@ impl Map {
         self.inner.insert(key.into(), value.into())
     }
 
+    /// Inserts the item before the specified index. If the index is >= the number of items,
+    /// it's simply appended to the end.
+    ///
+    /// ```
+    /// use encon::Map;
+    /// use encon::Encryptable;
+    ///
+    /// let mut map = Map::new();
+    /// map.insert("foo", encon::string("a"));
+    /// map.insert("baz", encon::string("c"));
+    /// map.insert_before(1, "bar", encon::string("b"));
+    ///
+    /// let keys = map.keys().map(|k| k as &str).collect::<Vec<_>>();
+    /// assert_eq!(keys, vec!["foo", "bar", "baz"]);
+    /// ```
+    pub fn insert_before(
+        &mut self,
+        index: usize,
+        key: impl Into<String>,
+        value: impl Into<WithIntent>,
+    ) -> Option<WithIntent> {
+        // Check if we're inserting before an item that doesn't yet exist, i.e. appending
+        if index >= self.len() {
+            return self.insert(key, value);
+        }
+
+        let key = key.into();
+        let mut to_insert = Some((key.clone(), value.into()));
+
+        let current_index = self.inner.get_index_of(&key);
+        let new_map = IndexMap::with_capacity(if current_index.is_some() {
+            self.inner.len()
+        } else {
+            self.inner.len() + 1
+        });
+
+        let inner = std::mem::replace(&mut self.inner, new_map);
+
+        // Try to find an existing item
+
+        let mut ret = None;
+
+        for (i, (k, v)) in inner.into_iter().enumerate() {
+            if i == index {
+                // This will only be executed once, but no reason to `.unwrap()`
+                if let Some((key, value)) = to_insert.take() {
+                    self.inner.insert(key, value);
+                }
+            }
+
+            if current_index == Some(i) {
+                ret = Some(v);
+            } else {
+                self.inner.insert(k, v);
+            }
+        }
+
+        ret
+    }
+
     /// Return an iterator over the keys of the map, in their order
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.inner.keys()
@@ -625,12 +690,13 @@ impl Map {
     }
 
     /// Return a reference to the value stored for key, if it is present, else None.
-    pub fn get(&self, key: &String) -> Option<&WithIntent> {
-        self.inner.get(key)
+    pub fn get(&self, key: impl Into<String>) -> Option<&WithIntent> {
+        self.inner.get(&key.into())
     }
 
-    pub fn get_mut(&mut self, key: &String) -> Option<&mut WithIntent> {
-        self.inner.get_mut(key)
+    /// Return a mutable reference to the value stored for key, if it is present, else None.
+    pub fn get_mut(&mut self, key: impl Into<String>) -> Option<&mut WithIntent> {
+        self.inner.get_mut(&key.into())
     }
 
     /// Returns a double-ended iterator visiting all key-value pairs in order of insertion.
@@ -645,10 +711,12 @@ impl Map {
         self.inner.iter_mut()
     }
 
-    pub fn remove(&mut self, key: &String) -> Option<WithIntent> {
-        self.inner.remove(key)
+    /// Remove the entry for this key, and return it if it exists.
+    pub fn remove(&mut self, key: impl Into<String>) -> Option<WithIntent> {
+        self.inner.remove(&key.into())
     }
 
+    /// Remove the entry for this key, and return it if it exists.
     pub fn sort_keys(&mut self) {
         self.inner.sort_keys()
     }
