@@ -20,7 +20,7 @@ pub enum EnconError {
         bad_keys: Vec<String>,
         source: Box<dyn Error + Send>,
     },
-    MapToJson(MapToJson),
+    MapToJson(MapToJsonError),
 }
 
 impl EnconError {
@@ -73,7 +73,7 @@ impl fmt::Display for EnconError {
                 }
             }
             Self::MapToJson(ref err) => match err {
-                MapToJson::ApplyRequired => write!(
+                MapToJsonError::ApplyRequired => write!(
                     f,
                     "Converting the Map to JSON failed due to unapplied intents"
                 ),
@@ -226,12 +226,12 @@ impl Error for DecryptError {
 /// The `ApplyRequired` variant means you need to call `map.apply_all_intents(password)?`
 /// before the `to_json` methods.
 #[derive(Debug)]
-pub enum MapToJson {
+pub enum MapToJsonError {
     ApplyRequired,
     Serde(serde_json::Error),
 }
 
-impl fmt::Display for MapToJson {
+impl fmt::Display for MapToJsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ApplyRequired => write!(
@@ -243,7 +243,7 @@ impl fmt::Display for MapToJson {
     }
 }
 
-impl Error for MapToJson {
+impl Error for MapToJsonError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Serde(source) => Some(&*source),

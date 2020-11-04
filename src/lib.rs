@@ -1,15 +1,47 @@
+//! Encon is an optionally-encrypted config format, built on top of JSON. A mix of encrypted
+//! and plain fields, and support for encrypting arbitrary JSON values make it very flexible.
+//!
+//! # Example
+//! ```
+//! use serde_json::json;
+//! use encon::{Password, Map, Encryptable};
+//!
+//! let pass = Password::new("strongpassword");
+//!
+//! let mut map = Map::new();
+//! map.insert("foo", Encryptable::Plain("Foo".into()));
+//! map.insert("bar", Encryptable::Plain("Bar".into()));
+//! map.get_mut(&"foo".to_owned()).unwrap().intend_encrypted();
+//!
+//! assert_eq!(map.get(&"foo".to_owned()).unwrap().is_encrypted(), false);
+//! assert_eq!(map.get(&"bar".to_owned()).unwrap().is_encrypted(), false);
+//!
+//! map.apply_all_intents(&pass).unwrap();
+//! assert_eq!(map.get(&"foo".to_owned()).unwrap().is_encrypted(), true);
+//! assert_eq!(map.get(&"bar".to_owned()).unwrap().is_encrypted(), false);
+//!
+//! let json = map.to_json_pretty().unwrap();
+//! let mut map2: Map = serde_json::from_str(&json).unwrap();
+//! assert_eq!(map2.get(&"foo".to_owned()).unwrap().is_encrypted(), true);
+//! assert_eq!(map2.get(&"bar".to_owned()).unwrap().is_encrypted(), false);
+//!
+//! let value = map2.get_mut(&"foo".to_owned()).unwrap()
+//!     .to_decrypted(&pass).unwrap()
+//!     .as_plain().unwrap().clone();
+//! assert_eq!(value, json!("Foo"));
+//! ```
 mod error;
 /// Serialize/Deserialize impls are in here
 mod serde;
 mod util;
 
-pub use error::{DecryptError, EnconError, EncryptError, MapToJson};
+pub use error::{DecryptError, EnconError, EncryptError, MapToJsonError};
+use indexmap::map::IndexMap;
 use serde_json::Value;
 use sodiumoxide::crypto::pwhash;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305::{Header, Key};
 use sodiumoxide::crypto::secretstream::{Stream, Tag, ABYTES, HEADERBYTES, KEYBYTES};
-use std::collections::HashMap;
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::io::Write as _;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -253,10 +285,17 @@ impl Encryptable {
         }
     }
 
+    pub fn is_encrypted(&self) -> bool {
+        match self {
+            Self::Encrypted(_) => true,
+            _ => false,
+        }
+    }
+
     /// If this is the encrypted variant, returns a the encrypted blob.
     pub fn as_encrypted(&self) -> Option<&[u8]> {
         match self {
-            Encryptable::Encrypted(value) => Some(&*value),
+            Self::Encrypted(value) => Some(&*value),
             _ => None,
         }
     }
@@ -264,7 +303,7 @@ impl Encryptable {
     /// If this is the plain variant, returns the serde_json `Value`.
     pub fn as_plain(&self) -> Option<&Value> {
         match self {
-            Encryptable::Plain(value) => Some(value),
+            Self::Plain(value) => Some(value),
             _ => None,
         }
     }
@@ -332,13 +371,15 @@ impl WithIntent {
     }
 
     /// Set the intent to `EncryptableKind::Encrypted` without changing the underlying `Encryptable`.
-    pub fn intend_encrypted(&mut self) {
+    pub fn intend_encrypted(&mut self) -> &mut Self {
         self.intent = EncryptableKind::Encrypted;
+        self
     }
 
     /// Set the intent to `EncryptableKind::Plain` without changing the underlying `Encryptable`.
-    pub fn intend_plain(&mut self) {
+    pub fn intend_plain(&mut self) -> &mut Self {
         self.intent = EncryptableKind::Plain;
+        self
     }
 
     /// Set the intent to `EncryptableKind::Plain` without changing the underlying `Encryptable`.
@@ -347,10 +388,18 @@ impl WithIntent {
 
         match (self.inner.kind(), self.intent) {
             (Encrypted, Plain) => {
-                self.inner = self.inner.to_decrypted(password)?;
+                self.inner = self
+                    .inner
+                    .to_decrypted(password)
+                    .map_err(EnconError::from)
+                    .map_err(|err| err.apply_intent(Plain))?;
             }
             (Plain, Encrypted) => {
-                self.inner = self.inner.to_encrypted(password)?;
+                self.inner = self
+                    .inner
+                    .to_encrypted(password)
+                    .map_err(EnconError::from)
+                    .map_err(|err| err.apply_intent(Encrypted))?;
             }
             (Plain, Plain) => {}
             (Encrypted, Encrypted) => {}
@@ -377,6 +426,15 @@ impl WithIntent {
             inner: self.inner.to_encrypted(password)?,
             intent: self.intent,
         })
+    }
+}
+
+impl From<Encryptable> for WithIntent {
+    fn from(inner: Encryptable) -> Self {
+        Self {
+            intent: inner.kind(),
+            inner,
+        }
     }
 }
 
@@ -416,12 +474,17 @@ impl DerefMut for WithIntent {
 ///     }
 /// })).unwrap();
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Map {
-    inner: HashMap<String, WithIntent>,
+    inner: IndexMap<String, WithIntent>,
 }
 
 impl Map {
+    /// Creates an empty `Map`
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Attempts to decrypt all fields with the provided key. This does *not* change the intent
     /// of the fields. You may later call `.apply_all_intents()` to re-encrypt any keys that were
     /// originally encrypted; possibly with a different password.
@@ -466,10 +529,10 @@ impl Map {
         Ok(())
     }
 
-    fn to_json_pre(&self) -> Result<(), MapToJson> {
+    fn to_json_pre(&self) -> Result<(), MapToJsonError> {
         for (_, value) in &self.inner {
             if value.intent != value.intent() {
-                return Err(MapToJson::ApplyRequired);
+                return Err(MapToJsonError::ApplyRequired);
             }
         }
 
@@ -479,14 +542,14 @@ impl Map {
     /// Converts the `Map` to pretty-printed JSON.
     ///
     /// This method requires that all intents have been applied (use [`apply_all_intents`]
-    /// to accomplish this). If intents aren't applied, then [`Err(MapToJson::ApplyRequired)`][MapToJson::ApplyRequired] will be returned
+    /// to accomplish this). If intents aren't applied, then [`Err(MapToJsonError::ApplyRequired)`][MapToJsonError::ApplyRequired] will be returned
     ///
     /// [`apply_all_intents`]: #method.apply_all_intents
-    /// [MapToJson::ApplyRequired]: ./enum.MapToJson.html#variant.ApplyRequired
-    pub fn to_json_pretty(&self) -> Result<String, MapToJson> {
+    /// [MapToJsonError::ApplyRequired]: ./enum.MapToJsonError.html#variant.ApplyRequired
+    pub fn to_json_pretty(&self) -> Result<String, MapToJsonError> {
         self.to_json_pre()?;
 
-        serde_json::to_string_pretty(&self.inner).map_err(MapToJson::Serde)
+        serde_json::to_string_pretty(&self.inner).map_err(MapToJsonError::Serde)
     }
 
     /// Similar to [`to_json_pretty`], except printed as compactly as possible.
@@ -495,12 +558,60 @@ impl Map {
     /// the `to_json_pretty` variant.
     ///
     /// [`to_json_pretty`]: #method.to_json_pretty
-    pub fn to_json_compact(&self) -> Result<String, MapToJson> {
+    pub fn to_json_compact(&self) -> Result<String, MapToJsonError> {
         self.to_json_pre()?;
 
-        serde_json::to_string(&self.inner).map_err(MapToJson::Serde)
+        serde_json::to_string(&self.inner).map_err(MapToJsonError::Serde)
+    }
+
+    /// Insert a `WithIntent`/`Encryptable`, returning the existing `WithIntent`, if any.
+    pub fn insert(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<WithIntent>,
+    ) -> Option<WithIntent> {
+        self.inner.insert(key.into(), value.into())
+    }
+
+    /// Return an iterator over the keys of the map, in their order
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.inner.keys()
+    }
+
+    /// Return an iterator over the values of the map, in their order
+    pub fn values(&self) -> impl Iterator<Item = &WithIntent> {
+        self.inner.values()
+    }
+
+    /// Get the given key’s corresponding entry in the map for insertion and/or in-place manipulation.
+    pub fn entry(&mut self, key: String) -> indexmap::map::Entry<'_, String, WithIntent> {
+        self.inner.entry(key)
+    }
+
+    /// Return a reference to the value stored for key, if it is present, else None.
+    pub fn get(&self, key: &String) -> Option<&WithIntent> {
+        self.inner.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &String) -> Option<&mut WithIntent> {
+        self.inner.get_mut(key)
+    }
+
+    pub fn remove(&mut self, key: &String) -> Option<WithIntent> {
+        self.inner.remove(key)
+    }
+
+    pub fn sort_keys(&mut self) {
+        self.inner.sort_keys()
+    }
+
+    pub fn reverse(&mut self) {
+        self.inner.reverse()
     }
 }
+
+// TODO: impl FromIterator<(String, WithIntent)>
+// TODO: impl FromIterator<(String, Encryptable)>
 
 #[cfg(test)]
 mod tests {

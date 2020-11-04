@@ -3,11 +3,11 @@ use crate::Encryptable;
 use crate::EncryptableKind;
 use crate::Map;
 use crate::WithIntent;
+use indexmap::map::IndexMap;
 use serde::de;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::fmt;
 
 impl Serialize for Encryptable {
@@ -160,7 +160,7 @@ impl<'de> Deserialize<'de> for Map {
     where
         D: serde::Deserializer<'de>,
     {
-        HashMap::deserialize(deserializer).map(|map| Map { inner: map })
+        IndexMap::deserialize(deserializer).map(|map| Map { inner: map })
     }
 }
 
