@@ -345,6 +345,22 @@ impl Encryptable {
             }
         }
     }
+
+    /// Wrap this in a `WithIntent` with the encrypted variant
+    pub fn with_intent_encrypted(self) -> WithIntent {
+        WithIntent {
+            intent: EncryptableKind::Encrypted,
+            inner: self,
+        }
+    }
+
+    /// Wrap this in a `WithIntent` with the plain variant
+    pub fn with_intent_plain(self) -> WithIntent {
+        WithIntent {
+            intent: EncryptableKind::Plain,
+            inner: self,
+        }
+    }
 }
 
 /// A wrapper around [`Encryptable`] that also has an intent flag, indicating if we'd like
@@ -597,6 +613,18 @@ impl Map {
         self.inner.get_mut(key)
     }
 
+    /// Returns a double-ended iterator visiting all key-value pairs in order of insertion.
+    /// Iterator element type is (&'a String, &'a mut WithIntent)
+    pub fn iter(&self) -> indexmap::map::Iter<String, WithIntent> {
+        self.inner.iter()
+    }
+
+    /// Returns a double-ended iterator visiting all key-value pairs in order of insertion.
+    /// Iterator element type is (&'a String, &'a mut WithIntent)
+    pub fn iter_mut(&mut self) -> indexmap::map::IterMut<String, WithIntent> {
+        self.inner.iter_mut()
+    }
+
     pub fn remove(&mut self, key: &String) -> Option<WithIntent> {
         self.inner.remove(key)
     }
@@ -607,6 +635,36 @@ impl Map {
 
     pub fn reverse(&mut self) {
         self.inner.reverse()
+    }
+
+    /// Returns the number of elements in the map.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns true if the map contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a Map {
+    type Item = (&'a String, &'a WithIntent);
+
+    type IntoIter = indexmap::map::Iter<'a, String, WithIntent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Map {
+    type Item = (&'a String, &'a mut WithIntent);
+
+    type IntoIter = indexmap::map::IterMut<'a, String, WithIntent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
     }
 }
 
