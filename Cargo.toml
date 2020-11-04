@@ -4,6 +4,7 @@ version = "0.0.1"
 authors = ["Frankie Bagnardi <f.bagnardi@gmail.com>"]
 edition = "2018"
 license = "MIT"
+description = "an optionally-encrypted config format, built on top of JSON"
 
 [workspace]
 members = [

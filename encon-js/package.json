@@ -1,0 +1,11 @@
+{
+  "name": "encon",
+  "version": "0.0.0",
+  "description": "(optionally) encrypted object notation",
+  "main": "index.js",
+  "scripts": {
+    "test": "node src/test.js"
+  },
+  "author": "Frankie Bagnardi <f.bagnardi@gmail.com>",
+  "license": "MIT"
+}
