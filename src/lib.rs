@@ -314,15 +314,7 @@ impl Encryptable {
     ///
     /// [`Password::encrypt`]: ./struct.Password.html#method.encrypt
     pub fn to_encrypted(&self, password: &Password) -> Result<Self, EncryptError> {
-        match self {
-            Self::Encrypted(_) => Ok(self.clone()),
-            Self::Plain(value) => {
-                let json = serde_json::to_string(value).map_err(EncryptError::serialize)?;
-                let bytes = password.encrypt(&json)?;
-
-                Ok(Self::Encrypted(bytes))
-            }
-        }
+        Ok(Self::Encrypted(self.encrypt(password)?))
     }
 
     /// If not already in the plain variant, this will return a decrypted/plain copy of
@@ -333,15 +325,43 @@ impl Encryptable {
     ///
     /// [`Password::decrypt`]: ./struct.Password.html#method.decrypt
     pub fn to_decrypted(&self, password: &Password) -> Result<Self, DecryptError> {
+        Ok(Self::Plain(self.decrypt(password)?))
+    }
+
+    /// Produces the encryption output as a `Vec` of bytes. This encrypts the value if not
+    /// already encrypted.
+    ///
+    /// See [`Password::encrypt`] for details.
+    ///
+    /// [`Password::encrypt`]: ./struct.Password.html#method.encrypt
+    pub fn encrypt(&self, password: &Password) -> Result<Vec<u8>, EncryptError> {
         match self {
-            Self::Plain(_) => Ok(self.clone()),
+            Self::Encrypted(bytes) => Ok(bytes.clone()),
+            Self::Plain(value) => {
+                let json = serde_json::to_string(value).map_err(EncryptError::serialize)?;
+                let bytes = password.encrypt(&json)?;
+
+                Ok(bytes)
+            }
+        }
+    }
+
+    /// Produces the decrypted JSON value. This decrypts the value if
+    /// already encrypted.
+    ///
+    /// See [`Password::decrypt`] for details.
+    ///
+    /// [`Password::decrypt`]: ./struct.Password.html#method.decrypt
+    pub fn decrypt(&self, password: &Password) -> Result<Value, DecryptError> {
+        match self {
+            Self::Plain(inner) => Ok(inner.clone()),
             Self::Encrypted(bytes) => {
                 let bytes = password.decrypt(bytes)?;
                 let json = String::from_utf8(bytes).map_err(DecryptError::utf8)?;
                 let value: Value =
                     serde_json::from_str(&json).map_err(DecryptError::deserialize)?;
 
-                Ok(Self::Plain(value))
+                Ok(value)
             }
         }
     }

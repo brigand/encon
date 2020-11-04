@@ -162,27 +162,22 @@ fn main() {
         "unseal" => {
             if let Some(key) = key {
                 match map.get(&key) {
-                    Some(enc) => {
-                        let result = enc
-                            .to_decrypted(&password)
-                            .map(|plain| plain.as_plain().unwrap().clone());
-                        match result {
-                            Ok(plain) => {
-                                let json = serde_json::to_string_pretty(&plain).unwrap();
-                                println!("{}", json);
-                            }
-                            Err(encon::DecryptError::LikelyWrongPassword) => {
-                                eprintln!("The provided password appears to be incorrect.");
-                                std::process::exit(1);
-                            }
-                            Err(err) => {
-                                eprintln!(
-                                    "An unexpected error ocurred during decryption:\n    {:#?}",
-                                    err
-                                );
-                            }
+                    Some(enc) => match enc.decrypt(&password) {
+                        Ok(plain) => {
+                            let json = serde_json::to_string_pretty(&plain).unwrap();
+                            println!("{}", json);
                         }
-                    }
+                        Err(encon::DecryptError::LikelyWrongPassword) => {
+                            eprintln!("The provided password appears to be incorrect.");
+                            std::process::exit(1);
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "An unexpected error ocurred during decryption:\n    {:#?}",
+                                err
+                            );
+                        }
+                    },
                     None => {
                         eprintln!("The provided key of {:?} does not exist", key);
                         std::process::exit(1);
