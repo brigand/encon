@@ -1,0 +1,17 @@
+[package]
+name = "encon"
+version = "0.1.0"
+authors = ["Frankie Bagnardi <f.bagnardi@gmail.com>"]
+edition = "2018"
+
+[workspace]
+members = [
+    "encon-cli",
+    "encon-prompt",
+]
+
+[dependencies]
+sodiumoxide = "0.2"
+serde_json = "1"
+serde = "1"
+hex = "0.4"
