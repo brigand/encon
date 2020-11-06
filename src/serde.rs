@@ -108,6 +108,34 @@ impl<'de> Deserialize<'de> for Encryptable {
                 Ok(Encryptable::Plain((v as f64).into()))
             }
 
+            fn visit_u8<E>(self, v: u8) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Encryptable::Plain((v as f64).into()))
+            }
+
+            fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Encryptable::Plain((v as f64).into()))
+            }
+
+            fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Encryptable::Plain((v as f64).into()))
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Encryptable::Plain((v as f64).into()))
+            }
+
             fn visit_f32<E>(self, v: f32) -> Result<Self::Value, E>
             where
                 E: de::Error,
@@ -137,6 +165,13 @@ impl<'de> Deserialize<'de> for Encryptable {
             }
 
             fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Encryptable::Plain(Value::Null))
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
             where
                 E: de::Error,
             {

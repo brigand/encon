@@ -31,6 +31,7 @@
 //! assert_eq!(value, json!("Foo"));
 //! ```
 mod error;
+pub mod legacy;
 /// Serialize/Deserialize impls are in here
 mod serde;
 mod util;
@@ -38,17 +39,26 @@ mod util;
 pub use error::{DecryptError, EnconError, EncryptError, MapToJsonError};
 use indexmap::map::IndexMap;
 use serde_json::Value;
+use sodiumoxide::crypto::aead::chacha20poly1305_ietf as aead;
 use sodiumoxide::crypto::pwhash;
-use sodiumoxide::crypto::secretstream::xchacha20poly1305::{Header, Key};
-use sodiumoxide::crypto::secretstream::{Stream, Tag, ABYTES, HEADERBYTES, KEYBYTES};
+use sodiumoxide::randombytes::randombytes;
 use std::fmt;
 use std::io::Write as _;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
 
-const CHUNKSIZE: usize = 4096;
-const SIGNATURE: [u8; 4] = [0xC1, 0x0A, 0x4B, 0xED];
+pub const SIGNATURE: [u8; 4] = [0xC2, 0x0A, 0x4B, 0xED];
+
+/// `init()` initializes the sodium library and chooses faster versions of the primitives
+/// if possible. init() also makes the random number generation functions thread-safe
+///
+/// See also [`sodiumoxide::init`].
+///
+/// [`sodiumoxide::init`]: https://docs.rs/sodiumoxide/0.2/sodiumoxide/fn.init.html
+pub fn init() -> Result<(), ()> {
+    sodiumoxide::init()
+}
 
 /// Represents an encryption password, and contains the low level encrypt/decrypt operations
 /// on lists of bytes.
@@ -97,40 +107,21 @@ impl Password {
         let salt = pwhash::gen_salt();
         output.write_all(&salt.0).map_err(EncryptError::write)?;
 
-        let mut key = [0u8; KEYBYTES];
-        pwhash::derive_key(
-            &mut key,
-            self.password.as_bytes(),
-            &salt,
-            pwhash::OPSLIMIT_INTERACTIVE,
-            pwhash::MEMLIMIT_INTERACTIVE,
-        )
-        .unwrap();
-        let key = Key(key);
+        let mut key = [0u8; aead::KEYBYTES];
+        pwhash::derive_key_interactive(&mut key, self.password.as_bytes(), &salt).unwrap();
 
-        let mut offset = 0;
-        let (mut stream, header) = Stream::init_push(&key).map_err(|_| EncryptError::Init)?;
-        output.write_all(&header.0).map_err(EncryptError::write)?;
+        let key = aead::Key(key);
 
-        while offset < bytes.len() {
-            let bytes_left = bytes.len().saturating_sub(offset);
-            let tag = match bytes_left {
-                0 => Tag::Final,
-                _ => Tag::Message,
-            };
+        let nonce_bytes = randombytes(aead::NONCEBYTES);
+        let nonce = aead::Nonce::from_slice(&nonce_bytes).expect("Nonce::from_slice");
 
-            let end = std::cmp::min(offset + CHUNKSIZE, bytes.len());
+        output
+            .write_all(&nonce_bytes)
+            .map_err(EncryptError::write)?;
 
-            output
-                .write_all(
-                    &stream
-                        .push(&bytes[offset..end], None, tag)
-                        .map_err(|_| EncryptError::EncryptChunk)?,
-                )
-                .map_err(EncryptError::write)?;
+        let sealed = aead::seal(bytes, None, &nonce, &key);
 
-            offset += CHUNKSIZE;
-        }
+        output.write_all(&sealed).map_err(EncryptError::write)?;
 
         Ok(output)
     }
@@ -145,15 +136,15 @@ impl Password {
     ///
     /// let password = Password::new("strongpassword");
     /// let buffer = password.decrypt(vec![
-    ///     0xc1, 0x0a, 0x4b, 0xed, 0x72, 0xa5, 0xb6, 0xec, 0xa2, 0xb2, 0x77, 0xcd,
-    ///     0x5f, 0x4b, 0xa1, 0x1e, 0x70, 0x73, 0x01, 0xd3, 0xbd, 0xb0, 0x5f, 0x9f,
-    ///     0xfa, 0x69, 0xfc, 0x9a, 0xf2, 0x28, 0xa7, 0x51, 0xc4, 0x70, 0xe0, 0x68,
-    ///     0x2f, 0x04, 0x90, 0x1a, 0xbc, 0xfc, 0xf4, 0x79, 0x14, 0x94, 0x38, 0x1f,
-    ///     0x0a, 0x36, 0xf2, 0xe1, 0x1f, 0x67, 0x87, 0x9b, 0x13, 0x01, 0xb3, 0x8b,
-    ///     0x1b, 0xff, 0x41, 0xce, 0x15, 0xef, 0x13, 0xdc, 0x57, 0xf1, 0xc0, 0x65,
-    ///     0x5a, 0x00, 0x3d, 0x23, 0xc8, 0x04, 0x4e, 0xe7, 0xd4, 0x29, 0x62, 0xa0,
-    ///     0x85, 0x98, 0x04, 0x36, 0xea, 0xdf,
+    ///     0xc2, 0x0a, 0x4b, 0xed, 0x94, 0xb3, 0x10, 0xf3, 0x8e, 0x97, 0x5e, 0x9a,
+    ///     0x9c, 0xb4, 0xf1, 0xd9, 0x4c, 0x32, 0xd4, 0x55, 0x60, 0x92, 0xa4, 0x40,
+    ///     0x35, 0x0f, 0x21, 0x51, 0xee, 0x1b, 0x2b, 0xa2, 0x8b, 0x91, 0xdc, 0xe1,
+    ///     0xc2, 0xf6, 0x47, 0x3e, 0x07, 0x1f, 0xad, 0xd2, 0x48, 0x14, 0x52, 0x85,
+    ///     0xab, 0x4e, 0xa7, 0x5d, 0xee, 0xf5, 0x03, 0xb6, 0x9d, 0xcd, 0xe0, 0xe2,
+    ///     0x91, 0x95, 0x49, 0x72, 0x04, 0xed, 0xb9, 0xa4, 0x9f, 0x07, 0x0b, 0x22,
+    ///     0x26, 0x51, 0x62, 0x36, 0x52,
     /// ]).unwrap();
+    ///
     /// let s = String::from_utf8(buffer).unwrap();
     /// assert_eq!(&s, "Hello, world!");
     /// #
@@ -165,7 +156,7 @@ impl Password {
     /// ```
     pub fn decrypt(&self, bytes: impl AsRef<[u8]>) -> Result<Vec<u8>, DecryptError> {
         let bytes = bytes.as_ref();
-        if bytes.len() <= (pwhash::SALTBYTES + HEADERBYTES + SIGNATURE.len()) {
+        if bytes.len() <= (pwhash::SALTBYTES + aead::NONCEBYTES + SIGNATURE.len()) {
             return Err(DecryptError::InputTooShort);
         }
 
@@ -176,47 +167,31 @@ impl Password {
 
         signature.copy_from_slice(&bytes[offset..offset + SIGNATURE.len()]);
         offset += signature.len();
+
+        // TEMP: allows decrypting legacy payloads
+        if signature == legacy::SIGNATURE {
+            let legacy = legacy::Password::from(self.clone());
+            return legacy.decrypt(bytes);
+        }
+
         salt.copy_from_slice(&bytes[offset..offset + pwhash::SALTBYTES]);
         offset += salt.len();
 
         let salt = pwhash::Salt(salt);
 
-        let mut header = [0u8; HEADERBYTES];
+        let mut nonce = [0u8; aead::NONCEBYTES];
 
-        header.copy_from_slice(&bytes[offset..offset + HEADERBYTES]);
-        offset += header.len();
+        nonce.copy_from_slice(&bytes[offset..offset + aead::NONCEBYTES]);
+        offset += nonce.len();
+        let nonce = aead::Nonce(nonce);
 
-        let header = Header(header);
+        let mut key = [0u8; aead::KEYBYTES];
+        pwhash::derive_key_interactive(&mut key, self.password.as_bytes(), &salt)
+            .map_err(|_| DecryptError::DeriveKey)?;
+        let key = aead::Key(key);
 
-        let mut key = [0u8; KEYBYTES];
-        pwhash::derive_key(
-            &mut key,
-            self.password.as_bytes(),
-            &salt,
-            pwhash::OPSLIMIT_INTERACTIVE,
-            pwhash::MEMLIMIT_INTERACTIVE,
-        )
-        .map_err(|_| DecryptError::DeriveKey)?;
-        let key = Key(key);
-
-        let mut stream = Stream::init_pull(&header, &key).map_err(|_| DecryptError::Init)?;
-
-        let mut output = Vec::new();
-
-        while stream.is_not_finalized() {
-            if offset >= bytes.len() {
-                break;
-            }
-
-            let end = std::cmp::min(offset + CHUNKSIZE + ABYTES, bytes.len());
-
-            let (decrypted, _tag) = stream
-                .pull(&bytes[offset..end], None)
-                .map_err(|_| DecryptError::LikelyWrongPassword)?;
-            output.write_all(&decrypted).map_err(DecryptError::write)?;
-
-            offset = end;
-        }
+        let output = aead::open(&bytes[offset..], None, &nonce, &key)
+            .map_err(|_| DecryptError::LikelyWrongPassword)?;
 
         Ok(output)
     }
@@ -401,6 +376,11 @@ pub struct WithIntent {
 }
 
 impl WithIntent {
+    // Extract the inner `Encryptable`, discarding the intent.
+    pub fn into_inner(self) -> Encryptable {
+        self.inner
+    }
+
     /// Get the current intent
     pub fn intent(&self) -> EncryptableKind {
         self.intent
@@ -605,6 +585,34 @@ impl Map {
         serde_json::to_string(&self.inner).map_err(MapToJsonError::Serde)
     }
 
+    /// Decrypts all fields and returns a `PlainMap` containing them. This allows you to
+    /// skip the plain vs encrypted checks in following code.
+    ///
+    /// The method clones the keys/values because you may later want to apply changes to the
+    /// `PlainMap` back on the `Map`, and then apply the original intents (which are only
+    /// stored in `Map`).
+    pub fn to_plain_map(&self, password: &Password) -> Result<PlainMap, EnconError> {
+        let mut copy = self.clone();
+        copy.decrypt_all_in_place(password)?;
+
+        let mut plain_map = PlainMap {
+            inner: IndexMap::with_capacity(self.len()),
+        };
+        for (key, with_intent) in copy {
+            match with_intent.into_inner() {
+                Encryptable::Plain(value) => {
+                    plain_map.insert(key, value);
+                }
+                _ => panic!(
+                    "Expected key {:?} to be decrypted after decrypt_all_in_place",
+                    key
+                ),
+            }
+        }
+
+        Ok(plain_map)
+    }
+
     /// Insert a `WithIntent`/`Encryptable`, returning the existing `WithIntent`, if any.
     pub fn insert(
         &mut self,
@@ -736,6 +744,16 @@ impl Map {
     }
 }
 
+impl IntoIterator for Map {
+    type Item = (String, WithIntent);
+
+    type IntoIter = indexmap::map::IntoIter<String, WithIntent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+
 impl<'a> IntoIterator for &'a Map {
     type Item = (&'a String, &'a WithIntent);
 
@@ -758,6 +776,207 @@ impl<'a> IntoIterator for &'a mut Map {
 
 // TODO: impl FromIterator<(String, WithIntent)>
 // TODO: impl FromIterator<(String, Encryptable)>
+
+/// Similar to [`Map`], but with all fields decrypted into [`Value`s].
+///
+/// You can acquire this by calling [`Map::to_plain_map`] with a password.
+///
+/// [`Map`]: struct.Map.html
+/// [`Map:to_plain_map`]: struct.Map.html#method.to_plain_map
+/// [`Value`s]: https://docs.rs/serde_json/1/serde_json/enum.Value.html
+#[derive(Debug, Clone, Default)]
+pub struct PlainMap {
+    inner: IndexMap<String, Value>,
+}
+
+impl PlainMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Converts the `PlainMap` to pretty-printed JSON.
+    pub fn to_json_pretty(&self) -> Result<String, MapToJsonError> {
+        serde_json::to_string_pretty(&self.inner).map_err(MapToJsonError::Serde)
+    }
+
+    /// Similar to [`to_json_pretty`], except printed as compactly as possible.
+    ///
+    /// This is `serde_json::to_string`, but named explicitly since you usually want
+    /// the `to_json_pretty` variant.
+    ///
+    /// [`to_json_pretty`]: #method.to_json_pretty
+    pub fn to_json_compact(&self) -> Result<String, MapToJsonError> {
+        serde_json::to_string(&self.inner).map_err(MapToJsonError::Serde)
+    }
+
+    /// Convert this to a [`serde_json::Value`] (in the Object/Map variant).
+    ///
+    /// [`serde_json::Value`]: https://docs.rs/serde_json/1/serde_json/enum.Value.html
+    pub fn to_value(&self) -> Value {
+        let map: serde_json::Map<String, Value> =
+            self.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        map.into()
+    }
+
+    /// Insert a [`Value`], returning the existing `Value`, if any.
+    ///
+    /// [`Value`]: https://docs.rs/serde_json/1/serde_json/enum.Value.html
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
+        self.inner.insert(key.into(), value.into())
+    }
+
+    /// Inserts the item before the specified index. If the index is >= the number of items,
+    /// it's simply appended to the end.
+    ///
+    /// ```
+    /// use encon::PlainMap;
+    ///
+    /// let mut map = PlainMap::new();
+    /// map.insert("foo", serde_json::json!("a"));
+    /// map.insert("baz", serde_json::json!("c"));
+    /// map.insert_before(1, "bar", serde_json::json!("b"));
+    ///
+    /// let keys = map.keys().map(|k| k as &str).collect::<Vec<_>>();
+    /// assert_eq!(keys, vec!["foo", "bar", "baz"]);
+    /// ```
+    pub fn insert_before(
+        &mut self,
+        index: usize,
+        key: impl Into<String>,
+        value: impl Into<Value>,
+    ) -> Option<Value> {
+        // TODO: refactor this into a helper to reduce duplication
+
+        // Check if we're inserting before an item that doesn't yet exist, i.e. appending
+        if index >= self.len() {
+            return self.insert(key, value);
+        }
+
+        let key = key.into();
+        let mut to_insert = Some((key.clone(), value.into()));
+
+        let current_index = self.inner.get_index_of(&key);
+        let new_map = IndexMap::with_capacity(if current_index.is_some() {
+            self.inner.len()
+        } else {
+            self.inner.len() + 1
+        });
+
+        let inner = std::mem::replace(&mut self.inner, new_map);
+
+        // Try to find an existing item
+
+        let mut ret = None;
+
+        for (i, (k, v)) in inner.into_iter().enumerate() {
+            if i == index {
+                // This will only be executed once, but no reason to `.unwrap()`
+                if let Some((key, value)) = to_insert.take() {
+                    self.inner.insert(key, value);
+                }
+            }
+
+            if current_index == Some(i) {
+                ret = Some(v);
+            } else {
+                self.inner.insert(k, v);
+            }
+        }
+
+        ret
+    }
+
+    /// Return an iterator over the keys of the map, in their order
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.inner.keys()
+    }
+
+    /// Return an iterator over the values of the map, in their order
+    pub fn values(&self) -> impl Iterator<Item = &Value> {
+        self.inner.values()
+    }
+
+    /// Get the given key’s corresponding entry in the map for insertion and/or in-place manipulation.
+    pub fn entry(&mut self, key: String) -> indexmap::map::Entry<'_, String, Value> {
+        self.inner.entry(key)
+    }
+
+    /// Return a reference to the value stored for key, if it is present, else None.
+    pub fn get(&self, key: impl Into<String>) -> Option<&Value> {
+        self.inner.get(&key.into())
+    }
+
+    /// Return a mutable reference to the value stored for key, if it is present, else None.
+    pub fn get_mut(&mut self, key: impl Into<String>) -> Option<&mut Value> {
+        self.inner.get_mut(&key.into())
+    }
+
+    /// Returns a double-ended iterator visiting all key-value pairs in order of insertion.
+    /// Iterator element type is (&'a String, &'a mut Value)
+    pub fn iter(&self) -> indexmap::map::Iter<String, Value> {
+        self.inner.iter()
+    }
+
+    /// Returns a double-ended iterator visiting all key-value pairs in order of insertion.
+    /// Iterator element type is (&'a String, &'a mut Value)
+    pub fn iter_mut(&mut self) -> indexmap::map::IterMut<String, Value> {
+        self.inner.iter_mut()
+    }
+
+    /// Remove the entry for this key, and return it if it exists.
+    pub fn remove(&mut self, key: impl Into<String>) -> Option<Value> {
+        self.inner.remove(&key.into())
+    }
+
+    /// Remove the entry for this key, and return it if it exists.
+    pub fn sort_keys(&mut self) {
+        self.inner.sort_keys()
+    }
+
+    pub fn reverse(&mut self) {
+        self.inner.reverse()
+    }
+
+    /// Returns the number of elements in the map.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns true if the map contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl IntoIterator for PlainMap {
+    type Item = (String, Value);
+
+    type IntoIter = indexmap::map::IntoIter<String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a PlainMap {
+    type Item = (&'a String, &'a Value);
+
+    type IntoIter = indexmap::map::Iter<'a, String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut PlainMap {
+    type Item = (&'a String, &'a mut Value);
+
+    type IntoIter = indexmap::map::IterMut<'a, String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
 
 #[cfg(test)]
 mod tests {
