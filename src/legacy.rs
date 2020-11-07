@@ -56,14 +56,7 @@ impl Password {
         output.write_all(&salt.0).map_err(EncryptError::write)?;
 
         let mut key = [0u8; KEYBYTES];
-        pwhash::derive_key(
-            &mut key,
-            self.password.as_bytes(),
-            &salt,
-            pwhash::OPSLIMIT_INTERACTIVE,
-            pwhash::MEMLIMIT_INTERACTIVE,
-        )
-        .unwrap();
+        pwhash::derive_key_interactive(&mut key, self.password.as_bytes(), &salt).unwrap();
         let key = Key(key);
 
         let mut offset = 0;
