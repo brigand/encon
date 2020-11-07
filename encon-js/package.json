@@ -1,11 +1,13 @@
 {
   "name": "encon",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "(optionally) encrypted object notation",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
     "test": "node src/test.js"
   },
   "author": "Frankie Bagnardi <f.bagnardi@gmail.com>",
+  "repository": "https://github.com/brigand/encon",
+  "homepage": "https://github.com/brigand/encon/tree/master/encon-js",
   "license": "MIT"
 }

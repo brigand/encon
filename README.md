@@ -40,5 +40,6 @@ Current version: 0.0.1
 ## Other Crates
 
 - `encon-cli`: a command line tool for interacting with encon JSON files
+- `encon-js`: an npm package (`npm install encon`)
 
 All crates licensed as MIT
