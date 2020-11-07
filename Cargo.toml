@@ -1,6 +1,6 @@
 [package]
 name = "encon"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Frankie Bagnardi <f.bagnardi@gmail.com>"]
 edition = "2018"
 license = "MIT"
